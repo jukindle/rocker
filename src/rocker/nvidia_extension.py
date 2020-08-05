@@ -49,7 +49,8 @@ class X11(RockerExtension):
   -e QT_X11_NO_MITSHM=1 \
   -e XAUTHORITY=%(xauth)s -v %(xauth)s:%(xauth)s \
   -v /tmp/.X11-unix:/tmp/.X11-unix \
-  -v /etc/localtime:/etc/localtime:ro " % locals()
+  -v /etc/localtime:/etc/localtime:ro \
+  --privileged " % locals()
 
     def precondition_environment(self, cliargs):
         xauth = self.xauth
@@ -92,7 +93,7 @@ class Nvidia(RockerExtension):
             self._env_subs = {}
             self._env_subs['user_id'] = os.getuid()
             self._env_subs['username'] = getpass.getuser()
-        
+
         # non static elements test every time
         detected_os = detect_os(cliargs['base_image'], print)
         if detected_os is None:
@@ -131,5 +132,3 @@ class Nvidia(RockerExtension):
             action='store_true',
             default=defaults.get(Nvidia.get_name(), None),
             help="Enable nvidia")
-
-
