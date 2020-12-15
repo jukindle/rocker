@@ -22,6 +22,7 @@ import sys
 
 import pkg_resources
 import pkgutil
+from requests.exceptions import ConnectionError
 import shlex
 import subprocess
 import tempfile
@@ -41,6 +42,11 @@ OPERATIONS_NON_INTERACTIVE = 'non-interactive'
 OPERATIONS_INTERACTIVE = 'interactive'
 OPERATION_MODES = [OPERATIONS_INTERACTIVE, OPERATIONS_NON_INTERACTIVE , OPERATIONS_DRY_RUN]
 
+
+class DependencyMissing(RuntimeError):
+    pass
+
+
 class RockerExtension(object):
     """The base class for Rocker extension points"""
 
@@ -59,6 +65,10 @@ class RockerExtension(object):
 
     def get_snippet(self, cliargs):
         return ''
+
+    def get_files(self, cliargs):
+        """Get a dict of local filenames and content to write into them"""
+        return {}
 
     @staticmethod
     def get_name():
@@ -107,11 +117,19 @@ class RockerExtensionManager:
 def get_docker_client():
     """Simple helper function for pre 2.0 imports"""
     try:
-        docker_client = docker.APIClient()
-    except AttributeError:
-        # docker-py pre 2.0
-        docker_client = docker.Client()
-    return docker_client
+        try:
+            docker_client = docker.APIClient()
+        except AttributeError:
+            # docker-py pre 2.0
+            docker_client = docker.Client()
+        # Validate that the server is available
+        docker_client.ping()
+        return docker_client
+    except (docker.errors.APIError, ConnectionError) as ex:
+        raise DependencyMissing('Docker Client failed to connect to docker daemon.'
+            ' Please verify that docker is installed and running.'
+            ' As well as that you have permission to access the docker daemon.'
+            ' This is usually by being a member of the docker group.')
 
 
 def docker_build(docker_client = None, output_callback = None, **kwargs):
@@ -193,10 +211,12 @@ class DockerImageGenerator(object):
             print('vvvvvv')
             print(self.dockerfile)
             print('^^^^^^')
+            write_files(self.active_extensions, self.cliargs, td)
             arguments = {}
             arguments['path'] = td
             arguments['rm'] = True
             arguments['nocache'] = kwargs.get('nocache', False)
+            arguments['pull'] = kwargs.get('pull', False)
             print("Building docker file with arguments: ", arguments)
             try:
                 self.image_id = docker_build(
@@ -277,12 +297,28 @@ class DockerImageGenerator(object):
                 return ex.returncode
 
 
+def write_files(extensions, args_dict, target_directory):
+    all_files = {}
+    for active_extension in extensions:
+        for file_name, contents in active_extension.get_files(args_dict).items():
+            if os.path.isabs(file_name):
+                print('WARNING!! Path %s from extension %s is absolute'
+                      'and cannot be written out, skipping' % (file_name, active_extension.get_name()))
+                continue
+            full_path = os.path.join(target_directory, file_name)
+            with open(full_path, 'w') as fh:
+                print('Writing to file %s' % full_path)
+                fh.write(contents)
+    return all_files
+
+
 def generate_dockerfile(extensions, args_dict, base_image):
     dockerfile_str = ''
     for el in extensions:
         dockerfile_str += '# Preamble from extension [%s]\n' % el.name
         dockerfile_str += el.get_preamble(args_dict) + '\n'
     dockerfile_str += '\nFROM %s\n' % base_image
+    dockerfile_str += 'USER root\n'
     for el in extensions:
         dockerfile_str += '# Snippet from extension [%s]\n' % el.name
         dockerfile_str += el.get_snippet(args_dict) + '\n'
@@ -299,18 +335,6 @@ def list_plugins(extension_point='rocker.extensions'):
     plugin_names = list(unordered_plugins.keys())
     plugin_names.sort()
     return OrderedDict([(k, unordered_plugins[k]) for k in plugin_names])
-
-
-def pull_image(image_name):
-    docker_client = get_docker_client()
-    try:
-        print("Pulling image %s" % image_name)
-        for line in docker_client.pull(image_name, stream=True):
-            print(line)
-        return True
-    except docker.errors.APIError as ex:
-        print('Pull of %s failed: %s' % (image_name, ex))
-        return False
 
 
 def get_rocker_version():

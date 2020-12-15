@@ -20,8 +20,8 @@ import sys
 
 from .core import DockerImageGenerator
 from .core import get_rocker_version
-from .core import pull_image
 from .core import RockerExtensionManager
+from .core import DependencyMissing
 
 from .os_detector import detect_os
 
@@ -39,9 +39,13 @@ def main():
     parser.add_argument('-v', '--version', action='version',
         version='%(prog)s ' + get_rocker_version())
 
-    extension_manager = RockerExtensionManager()
-    default_args = {}
-    extension_manager.extend_cli_parser(parser, default_args)
+    try:
+        extension_manager = RockerExtensionManager()
+        default_args = {}
+        extension_manager.extend_cli_parser(parser, default_args)
+    except DependencyMissing as ex:
+        # Catch errors if docker is missing or inaccessible.
+        parser.error("DependencyMissing encountered: %s" % ex)
 
     args = parser.parse_args()
     args_dict = vars(args)
@@ -52,14 +56,11 @@ def main():
         print('DEPRECATION Warning: --noexecute is deprecated for --mode dry-run please switch your usage by December 2020')
     
     active_extensions = extension_manager.get_active_extensions(args_dict)
-    # Force user to end if present otherwise it will 
+    # Force user to end if present otherwise it will break other extensions
     active_extensions.sort(key=lambda e:e.get_name().startswith('user'))
     print("Active extensions %s" % [e.get_name() for e in active_extensions])
 
     base_image = args.image
-
-    if args.pull:
-        pull_image(base_image)
 
     dig = DockerImageGenerator(active_extensions, args_dict, base_image)
     exit_code = dig.build(**vars(args))
